@@ -12,6 +12,7 @@ import {
   ToastNotification,
   HourlyRushPrediction,
   AiRecommendation,
+  OptimizationResult,
 } from '@/types/queue';
 import { INITIAL_COUNTERS, INITIAL_TOKENS } from '@/data/mockData';
 import {
@@ -20,6 +21,8 @@ import {
   generateHourlyRushPredictions,
   generateAiInsights,
   recalculateQueuePredictions,
+  computeCounterMetrics,
+  optimizeQueueAllocation,
 } from '@/utils/aiPrediction';
 
 const TOKENS_STORAGE_KEY = 'bankqueue_tokens_v2';
@@ -28,10 +31,12 @@ const COUNTERS_STORAGE_KEY = 'bankqueue_counters_v2';
 interface QueueContextType {
   tokens: QueueToken[];
   counters: BankCounter[];
+  enrichedCounters: BankCounter[]; // Phase 3: counters with utilization/overload metrics
   kpis: DashboardKPIs;
   notifications: ToastNotification[];
   hourlyPredictions: HourlyRushPrediction[];
   aiRecommendations: AiRecommendation[];
+  lastOptimizationResult: OptimizationResult | null; // Phase 3
   activeTab: NavTab;
   setActiveTab: (tab: NavTab) => void;
   searchQuery: string;
@@ -63,6 +68,7 @@ interface QueueContextType {
   callNextWaiting: (counterId: string) => { success: boolean; message: string };
   toggleCounterStatus: (counterId: string) => void;
   applyAiRecommendation: (recId: string) => void;
+  optimizeQueue: () => void; // Phase 3
   resetDemoData: () => void;
   addToast: (type: 'success' | 'info' | 'warning' | 'error', title: string, message: string) => void;
   removeToast: (id: string) => void;
@@ -86,6 +92,7 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
   const [lastGeneratedToken, setLastGeneratedToken] = useState<QueueToken | null>(null);
   const [selectedToken, setSelectedToken] = useState<QueueToken | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [lastOptimizationResult, setLastOptimizationResult] = useState<OptimizationResult | null>(null);
 
   // Load persisted demo data on client mount
   useEffect(() => {
@@ -183,6 +190,11 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
   const aiRecommendations = useMemo(() => {
     return generateAiInsights(tokens, counters);
   }, [tokens, counters]);
+
+  // Phase 3: Enriched counters with live utilization & overload metrics
+  const enrichedCounters = useMemo(() => {
+    return computeCounterMetrics(counters, tokens);
+  }, [counters, tokens]);
 
   // Determine optimal assigned counter for a service
   const findBestCounter = useCallback(
@@ -580,6 +592,35 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
     [aiRecommendations, counters, toggleCounterStatus, addToast]
   );
 
+  // Phase 3: Optimize Queue Allocation
+  const optimizeQueue = useCallback(() => {
+    const waitingCount = tokens.filter((t) => t.status === 'Waiting').length;
+
+    if (waitingCount === 0) {
+      addToast('info', 'Queue Empty', 'No waiting customers to optimise.');
+      return;
+    }
+
+    const { optimizedTokens, result } = optimizeQueueAllocation(tokens, counters);
+
+    setTokens(optimizedTokens);
+    setLastOptimizationResult(result);
+
+    if (result.reallocatedCount === 0) {
+      addToast(
+        'info',
+        'Already Optimal',
+        'Queue load is already balanced across all active counters.'
+      );
+    } else {
+      addToast(
+        'success',
+        `Queue Optimised — ${result.reallocatedCount} Reassignment${result.reallocatedCount > 1 ? 's' : ''}`,
+        `Avg wait time: ${result.initialAvgWaitTime} min → ${result.optimizedAvgWaitTime} min. ${result.improvementPercentage}% improvement.`
+      );
+    }
+  }, [tokens, counters, addToast]);
+
   // Action: Reset Demo Data
   const resetDemoData = useCallback(() => {
     try {
@@ -603,10 +644,12 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
       value={{
         tokens,
         counters,
+        enrichedCounters,
         kpis,
         notifications,
         hourlyPredictions,
         aiRecommendations,
+        lastOptimizationResult,
         activeTab,
         setActiveTab,
         searchQuery,
@@ -631,6 +674,7 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
         callNextWaiting,
         toggleCounterStatus,
         applyAiRecommendation,
+        optimizeQueue,
         resetDemoData,
         addToast,
         removeToast,

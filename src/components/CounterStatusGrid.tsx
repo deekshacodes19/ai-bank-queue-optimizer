@@ -1,13 +1,13 @@
 'use client';
 
 import React from 'react';
-import { Monitor, User, Coffee, Play, CheckCircle2 } from 'lucide-react';
+import { Monitor, User, Coffee, Play, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useQueue } from '@/context/QueueContext';
 import { CounterStatus } from '@/types/queue';
 
 export default function CounterStatusGrid() {
   const {
-    counters,
+    enrichedCounters,
     callNextWaiting,
     completeService,
     toggleCounterStatus,
@@ -71,9 +71,9 @@ export default function CounterStatusGrid() {
 
       {/* Grid of 5 Counter Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
-        {counters.map((counter) => {
+        {enrichedCounters.map((counter) => {
           const style = getStatusColor(counter.status);
-          const progressPercent = Math.min(
+          const progressPercent = counter.utilizationRate ?? Math.min(
             100,
             Math.round((counter.totalServed / counter.dailyCapacity) * 100)
           );
@@ -81,7 +81,11 @@ export default function CounterStatusGrid() {
           return (
             <div
               key={counter.id}
-              className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-white hover:border-blue-200 hover:shadow-sm transition-all flex flex-col justify-between"
+              className={`p-4 rounded-xl border bg-slate-50/50 hover:bg-white hover:border-blue-200 hover:shadow-sm transition-all flex flex-col justify-between ${
+                counter.isOverloaded
+                  ? 'border-rose-300 ring-1 ring-rose-100'
+                  : 'border-slate-200/80'
+              }`}
             >
               <div>
                 {/* Counter Name & Service */}
@@ -94,12 +98,19 @@ export default function CounterStatusGrid() {
                       {counter.specialization}
                     </p>
                   </div>
-                  {/* Status Indicator Dot */}
-                  <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
-                    <span className={`w-2 h-2 rounded-full ${style.dot}`}></span>
-                    <span className={`text-[10px] font-semibold ${style.text}`}>
-                      {counter.status}
-                    </span>
+                  {/* Status Indicator Dot + overload alert */}
+                  <div className="flex flex-col items-end gap-0.5 shrink-0 mt-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${style.dot}`}></span>
+                      <span className={`text-[10px] font-semibold ${style.text}`}>
+                        {counter.status}
+                      </span>
+                    </div>
+                    {counter.isOverloaded && (
+                      <span className="flex items-center gap-0.5 text-[9px] font-bold text-rose-600">
+                        <AlertTriangle className="w-2.5 h-2.5" />Overloaded
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -123,12 +134,18 @@ export default function CounterStatusGrid() {
                 {/* Total Served & Progress Bar */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-slate-400 font-medium">Total Served:</span>
-                    <span className="font-bold text-slate-700">{counter.totalServed}</span>
+                    <span className="text-slate-400 font-medium">Utilization:</span>
+                    <span className={`font-bold ${
+                      progressPercent >= 85 ? 'text-rose-600' :
+                      progressPercent >= 65 ? 'text-amber-600' : 'text-slate-700'
+                    }`}>{progressPercent}%</span>
                   </div>
                   <div className="w-full bg-slate-200/70 rounded-full h-1.5 overflow-hidden">
                     <div
-                      className="bg-blue-600 h-1.5 rounded-full transition-all duration-500"
+                      className={`h-1.5 rounded-full transition-all duration-500 ${
+                        counter.isOverloaded ? 'bg-rose-500' :
+                        progressPercent >= 65 ? 'bg-amber-500' : 'bg-blue-600'
+                      }`}
                       style={{ width: `${progressPercent}%` }}
                     ></div>
                   </div>

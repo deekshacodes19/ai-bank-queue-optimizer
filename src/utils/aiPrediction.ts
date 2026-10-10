@@ -6,6 +6,8 @@ import {
   ServiceType,
   AiRecommendation,
   WaitTimeBreakdown,
+  OptimizationResult,
+  ReassignmentDetail,
 } from '@/types/queue';
 
 /**
@@ -303,4 +305,232 @@ export function generateAiInsights(
   }
 
   return recommendations;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Intelligent Counter Allocation & Optimization
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes live utilisation metrics for every counter.
+ * Returns a new array — does NOT mutate the original counters.
+ */
+export function computeCounterMetrics(
+  counters: BankCounter[],
+  tokens: QueueToken[]
+): BankCounter[] {
+  return counters.map((counter) => {
+    // Tokens currently waiting that this counter CAN serve
+    const waitingForCounter = tokens.filter(
+      (t) =>
+        t.status === 'Waiting' &&
+        (counter.supportedServices.includes(t.serviceType) ||
+          t.assignedCounter === counter.name)
+    );
+
+    // Total workload: sum of benchmark durations for all waiting tokens
+    const workloadMinutes = waitingForCounter.reduce((acc, t) => {
+      return acc + (SERVICE_BENCHMARK_DURATIONS[t.serviceType] || 6);
+    }, 0);
+
+    // Utilisation = totalServed / dailyCapacity (capped at 100)
+    const utilizationRate = Math.min(
+      100,
+      Math.round((counter.totalServed / Math.max(1, counter.dailyCapacity)) * 100)
+    );
+
+    // Overloaded when waiting queue for this counter exceeds 4 customers
+    const isOverloaded = waitingForCounter.length > 4 && counter.status !== 'On Break';
+
+    return {
+      ...counter,
+      waitingCount: waitingForCounter.length,
+      workloadMinutes,
+      utilizationRate,
+      isOverloaded,
+    };
+  });
+}
+
+/**
+ * Core Phase 3 optimisation engine.
+ *
+ * Strategy:
+ *  1. Compute per-counter workload (waiting-minute load).
+ *  2. Find overloaded counters (workload above average).
+ *  3. Find compatible under-loaded or available counters for each service type.
+ *  4. Reassign waiting tokens from overloaded counters to better ones,
+ *     respecting service compatibility and no-duplicate rules.
+ *  5. Recalculate wait times after reassignments.
+ *  6. Return an OptimizationResult describing every reassignment.
+ */
+export function optimizeQueueAllocation(
+  tokens: QueueToken[],
+  counters: BankCounter[]
+): { optimizedTokens: QueueToken[]; result: OptimizationResult } {
+  const waitingTokens = tokens.filter((t) => t.status === 'Waiting');
+
+  if (waitingTokens.length === 0) {
+    const emptyResult: OptimizationResult = {
+      timestamp: new Date().toISOString(),
+      reallocatedCount: 0,
+      initialAvgWaitTime: 0,
+      optimizedAvgWaitTime: 0,
+      improvementPercentage: 0,
+      reassignments: [],
+      summaryMessage: 'Queue is empty — no optimisation needed.',
+    };
+    return { optimizedTokens: tokens, result: emptyResult };
+  }
+
+  // Snapshot avg wait BEFORE optimisation
+  const initialAvgWaitTime = calculateDynamicAverageWaitTime(tokens, counters);
+
+  // Active (non-break) counters only
+  const activeCounters = counters.filter((c) => c.status !== 'On Break');
+
+  // Build a workload map: counterId -> list of waiting tokens assigned to it
+  const counterWorkloadMap = new Map<string, QueueToken[]>();
+  activeCounters.forEach((c) => counterWorkloadMap.set(c.id, []));
+
+  // Assign each waiting token to its current counter bucket
+  waitingTokens.forEach((t) => {
+    const matchedCounter = activeCounters.find(
+      (c) => c.name === t.assignedCounter && c.supportedServices.includes(t.serviceType)
+    );
+    if (matchedCounter) {
+      counterWorkloadMap.get(matchedCounter.id)?.push(t);
+    }
+  });
+
+  // Compute workload (in minutes) per counter
+  const workloadMinutesMap = new Map<string, number>();
+  activeCounters.forEach((c) => {
+    const assigned = counterWorkloadMap.get(c.id) || [];
+    const mins = assigned.reduce(
+      (acc, t) => acc + (SERVICE_BENCHMARK_DURATIONS[t.serviceType] || 6),
+      0
+    );
+    workloadMinutesMap.set(c.id, mins);
+  });
+
+  const totalWorkload = Array.from(workloadMinutesMap.values()).reduce(
+    (a, b) => a + b,
+    0
+  );
+  const avgWorkloadPerCounter =
+    activeCounters.length > 0 ? totalWorkload / activeCounters.length : 0;
+
+  // Overloaded threshold: 30% above average workload, minimum 10 minutes
+  const overloadThreshold = Math.max(10, avgWorkloadPerCounter * 1.3);
+
+  const reassignments: ReassignmentDetail[] = [];
+  let workingTokens = [...tokens];
+
+  // Track already-reassigned token IDs to prevent duplicates
+  const reassignedIds = new Set<string>();
+
+  // Process each overloaded counter
+  activeCounters.forEach((overloadedCounter) => {
+    const load = workloadMinutesMap.get(overloadedCounter.id) || 0;
+    if (load <= overloadThreshold) return;
+
+    const assignedTokens = counterWorkloadMap.get(overloadedCounter.id) || [];
+
+    // Sort: move Regular priority tokens first (keep VIP/Senior/DA)
+    const movableCandidates = assignedTokens
+      .filter(
+        (t) =>
+          !reassignedIds.has(t.id) &&
+          (t.priority === 'Regular' || t.priority === 'Senior Citizen')
+      )
+      .sort((a, b) => {
+        // Move Regular before Senior Citizen
+        if (a.priority === 'Regular' && b.priority !== 'Regular') return -1;
+        return 1;
+      });
+
+    movableCandidates.forEach((token) => {
+      // Find a compatible alternative counter with LOWER workload
+      const compatibleCounters = activeCounters.filter(
+        (c) =>
+          c.id !== overloadedCounter.id &&
+          c.supportedServices.includes(token.serviceType) &&
+          (workloadMinutesMap.get(c.id) || 0) < load - 5 // only move if meaningfully less loaded
+      );
+
+      if (compatibleCounters.length === 0) return;
+
+      // Pick the least loaded compatible counter
+      const targetCounter = compatibleCounters.reduce((best, c) =>
+        (workloadMinutesMap.get(c.id) || 0) < (workloadMinutesMap.get(best.id) || 0)
+          ? c
+          : best
+      );
+
+      const tokenDuration = SERVICE_BENCHMARK_DURATIONS[token.serviceType] || 6;
+
+      // Estimate time saved
+      const oldWorkload = workloadMinutesMap.get(overloadedCounter.id) || 0;
+      const newWorkload = workloadMinutesMap.get(targetCounter.id) || 0;
+      const timeSaved = Math.max(
+        1,
+        Math.round(
+          ((oldWorkload - newWorkload) / 2 / Math.max(1, activeCounters.length)) *
+            (token.priority === 'Regular' ? 1 : 0.75)
+        )
+      );
+
+      // Perform reassignment on the working tokens array
+      workingTokens = workingTokens.map((t) =>
+        t.id === token.id ? { ...t, assignedCounter: targetCounter.name } : t
+      );
+
+      // Update workload maps
+      workloadMinutesMap.set(
+        overloadedCounter.id,
+        (workloadMinutesMap.get(overloadedCounter.id) || 0) - tokenDuration
+      );
+      workloadMinutesMap.set(
+        targetCounter.id,
+        (workloadMinutesMap.get(targetCounter.id) || 0) + tokenDuration
+      );
+
+      reassignedIds.add(token.id);
+      reassignments.push({
+        tokenNumber: token.tokenNumber,
+        customerName: token.customerName,
+        serviceType: token.serviceType,
+        fromCounter: overloadedCounter.name,
+        toCounter: targetCounter.name,
+        timeSavedMinutes: timeSaved,
+      });
+    });
+  });
+
+  // Recalculate AI wait times for ALL waiting tokens after reassignment
+  const optimizedTokens = recalculateQueuePredictions(workingTokens, counters);
+  const optimizedAvgWaitTime = calculateDynamicAverageWaitTime(optimizedTokens, counters);
+
+  const improvement =
+    initialAvgWaitTime > 0
+      ? Math.round(
+          ((initialAvgWaitTime - optimizedAvgWaitTime) / initialAvgWaitTime) * 100
+        )
+      : 0;
+
+  const result: OptimizationResult = {
+    timestamp: new Date().toISOString(),
+    reallocatedCount: reassignments.length,
+    initialAvgWaitTime,
+    optimizedAvgWaitTime,
+    improvementPercentage: Math.max(0, improvement),
+    reassignments,
+    summaryMessage:
+      reassignments.length === 0
+        ? 'Queue is already optimally balanced. No reassignments needed.'
+        : `Successfully redistributed ${reassignments.length} customer(s) across ${Array.from(new Set(reassignments.map((r) => r.toCounter))).length} counter(s). Average wait time reduced from ${initialAvgWaitTime} min to ${optimizedAvgWaitTime} min.`,
+  };
+
+  return { optimizedTokens, result };
 }

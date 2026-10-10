@@ -5,7 +5,7 @@ import { Zap, Ticket, BarChart3, Sliders, Settings } from 'lucide-react';
 import { useQueue } from '@/context/QueueContext';
 
 export default function QuickActionsCard() {
-  const { setIsTokenModalOpen, setActiveTab } = useQueue();
+  const { setIsTokenModalOpen, setActiveTab, optimizeQueue } = useQueue();
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_2px_10px_rgba(0,0,0,0.02)] p-5">
@@ -60,7 +60,21 @@ export default function QuickActionsCard() {
           </span>
         </button>
 
-        {/* 4. Settings */}
+        {/* 4. Optimize Queue */}
+        <button
+          id="quick-optimize-btn"
+          onClick={optimizeQueue}
+          className="p-3.5 rounded-xl border border-indigo-200/80 bg-indigo-50/40 hover:bg-indigo-50/80 hover:border-indigo-300 hover:shadow-xs transition-all flex flex-col items-center justify-center text-center group cursor-pointer"
+        >
+          <div className="w-9 h-9 rounded-xl bg-white border border-indigo-200 text-indigo-600 flex items-center justify-center mb-2 group-hover:scale-105 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-2xs">
+            <Zap className="w-4 h-4" />
+          </div>
+          <span className="text-xs font-semibold text-indigo-700 group-hover:text-indigo-800">
+            Optimize Queue
+          </span>
+        </button>
+
+        {/* 5. Settings */}
         <button
           onClick={() => setActiveTab('settings')}
           className="p-3.5 rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-blue-50/60 hover:border-blue-200 hover:shadow-xs transition-all flex flex-col items-center justify-center text-center group cursor-pointer"
