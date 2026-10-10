@@ -34,6 +34,12 @@ export default function CounterStatusGrid() {
           text: 'text-amber-700',
           badge: 'bg-amber-50 border-amber-200',
         };
+      default:
+        return {
+          dot: 'bg-slate-400',
+          text: 'text-slate-700',
+          badge: 'bg-slate-50 border-slate-200',
+        };
     }
   };
 
