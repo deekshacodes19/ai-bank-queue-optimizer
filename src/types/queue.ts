@@ -128,3 +128,49 @@ export interface OptimizationResult {
   reassignments: ReassignmentDetail[];
   summaryMessage: string;
 }
+
+// Phase 4: Analytics & Reports Types
+export type AnalyticsTimeRange = 'today' | '7days' | '30days';
+
+export interface TrafficDataPoint {
+  label: string;
+  totalTraffic: number;
+  servedCount: number;
+  waitingCount: number;
+}
+
+export interface WaitTimeTrendPoint {
+  label: string;
+  avgWaitTime: number;
+  peakWaitTime: number;
+}
+
+export interface ServiceDemandPoint {
+  service: ServiceType;
+  shortName: string;
+  count: number;
+  percentage: number;
+  avgWait: number;
+  color: string;
+}
+
+export interface CounterPerformancePoint {
+  counterName: string;
+  specialization: string;
+  totalServed: number;
+  dailyCapacity: number;
+  utilizationRate: number;
+  status: CounterStatus;
+  avgHandlingMinutes: number;
+}
+
+export interface SmartAnalyticsInsight {
+  id: string;
+  type: 'peak_traffic' | 'busy_counter' | 'long_wait' | 'optimization_impact';
+  title: string;
+  description: string;
+  metric: string;
+  badge: string;
+  severity: 'info' | 'warning' | 'alert' | 'success';
+}
+
